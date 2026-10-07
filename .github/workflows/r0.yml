@@ -17,7 +17,7 @@ jobs:
           echo "== self status caps/seccomp =="; grep -E 'Cap|Seccomp|NoNewPrivs' /proc/self/status
           echo "== issue =="; cat /etc/issue 2>/dev/null; lsb_release -a 2>/dev/null
           echo "== root dir =="; ls /
-          echo "== image-generation =="; ls /image-generation 2>/dev/null && head -50 /image-generation/*.md 2>/dev/null
+          ls /imagegeneration 2>/dev/null; head -50 /imagegeneration/*.md 2>/dev/null; true
       - name: dev-blocks
         run: |
           set +e
