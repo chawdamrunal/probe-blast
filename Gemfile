@@ -1,6 +1,6 @@
 source "https://rubygems.org"
 
-gem "rack", "2.2.3"
+gem "rack", "3.2.7"
 
 if RUBY_PLATFORM =~ /linux/
   begin
