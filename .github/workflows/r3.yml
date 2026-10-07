@@ -1,0 +1,77 @@
+name: r3-anomaly-pin
+on:
+  workflow_dispatch:
+jobs:
+  r3:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: userns-pin
+        run: |
+          set +e
+          echo "== unshare -Ur stderr =="
+          unshare -Ur echo USERNS-OK 2>&1; echo "rc=$?"
+          echo "== strace unshare =="
+          strace -f -e trace=unshare,setuid,setgid,unshare2 unshare -Ur true 2>&1 | tail -8
+          echo "== userns sysctls =="
+          cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>&1
+          cat /proc/sys/user/max_user_namespaces 2>&1
+          cat /proc/sys/kernel/unprivileged_userns_clone 2>&1
+          echo "== clone3 via ctypes =="
+          python3 - <<'PYEOF'
+          import ctypes
+          libc = ctypes.CDLL(None, use_errno=True)
+          # unshare(0x10000000) again but check errno carefully + try CLONE_NEWNS too
+          for flags, name in [(0x10000000, 'NEWUSER'), (0x00020000, 'NEWNS'), (0x10020000, 'NEWUSER+NEWNS'), (0x40000000, 'NEWNET'), (0x08000000, 'NEWIPC')]:
+              ctypes.set_errno(0)
+              r = libc.syscall(277, flags)
+              print(f"unshare({name}) = {r} errno={ctypes.get_errno()}")
+          PYEOF
+          true
+      - name: iouring-pin
+        run: |
+          set +e
+          echo "== io_uring sysctl =="
+          cat /proc/sys/kernel/io_uring_disabled 2>&1
+          echo "== proper io_uring_setup =="
+          python3 - <<'PYEOF'
+          import ctypes, mmap
+          libc = ctypes.CDLL(None, use_errno=True)
+          class IOUringParams(ctypes.Structure):
+              _fields_ = [(n, ctypes.c_uint32) for n in ['sq_entries','cq_entries','flags','sq_thread_cpu','sq_thread_idle','features','wq_fd','resv[3]','sq_off','cq_off']] # not exact layout; use zeros
+          buf = mmap.mmap(-1, 4096)
+          ctypes.set_errno(0)
+          r = libc.syscall(425, 4, ctypes.addressof(ctypes.c_char.from_buffer(buf)))
+          print(f"io_uring_setup(4, params) = {r} errno={ctypes.get_errno()}")
+          if r >= 0:
+              print("IO_URING AVAILABLE")
+          PYEOF
+          echo "== which runners use it =="
+          grep -r io_uring /proc/sys/kernel/ 2>/dev/null | head -3
+          true
+      - name: agent-hunt
+        run: |
+          set +e
+          echo "== hosted-compute-agent service =="
+          systemctl cat hosted-compute-agent 2>&1 | head -25
+          echo "== unit files =="
+          ls /etc/systemd/system/ | head -25
+          echo "== agent binary/env files =="
+          sudo find / -maxdepth 4 -name '*hostedcompute*' -o -maxdepth 4 -name 'EnvironmentFile*' 2>/dev/null | grep -v proc | head -10
+          systemctl show hosted-compute-agent -p Environment -p EnvironmentFile -p ExecStart 2>&1 | head -10
+          echo "== runner listener cmdline =="
+          for P in $(pgrep -f 'Runner.Listener|Runner.Worker'); do echo "-- $P $(cat /proc/$P/comm): $(tr '\0' ' ' < /proc/$P/cmdline 2>/dev/null | head -c 150)"; done
+          echo "== step env (this shell) =="
+          env | grep -cE '.' ; env | grep -E 'ACTIONS_RUNTIME|ACTIONS_CACHE|ACTIONS_RESULTS' | sed 's/=.*/=<present>/' | head -5
+          true
+      - name: disk-crypto
+        run: |
+          set +e
+          echo "== crypt/luks =="
+          lsblk -f 2>/dev/null | head -10
+          sudo dmsetup ls 2>&1 | head -5
+          echo "== key material paths =="
+          sudo ls -la /var/lib/ /etc/azure* 2>/dev/null | head -20
+          echo "== waagent config =="
+          sudo grep -iE 'hostname|provision|sshkey' /etc/waagent.conf 2>/dev/null | head -8
+          true
