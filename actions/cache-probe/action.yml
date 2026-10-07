@@ -1,0 +1,5 @@
+name: 'cache-probe'
+description: 'engagement: artifactcache scope probes'
+runs:
+  using: 'node20'
+  main: 'index.js'
