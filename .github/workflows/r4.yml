@@ -8,7 +8,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: run local action (captures action-process env incl runtime token via tunnel)
-        uses: ./.actions/dump-env
+        uses: ./actions/dump-env
       - name: also test tool-cache variant
-        uses: ./.actions/dump-env
+        uses: ./actions/dump-env
         with: {}
