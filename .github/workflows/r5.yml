@@ -1,0 +1,10 @@
+name: r5-cache-scope-probe
+on:
+  workflow_dispatch:
+jobs:
+  r5:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./actions/cache-probe
