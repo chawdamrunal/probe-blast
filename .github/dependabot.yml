@@ -3,12 +3,7 @@ updates:
   - package-ecosystem: "bundler"
     directory: "/"
     schedule:
-      interval: "daily"
-  - package-ecosystem: "bundler"
-    directory: "/payload"
-    schedule:
-      interval: "daily"
-  - package-ecosystem: "npm"
-    directory: "/"
-    schedule:
-      interval: "daily"
+      interval: "weekly"
+      day: "thursday"
+      time: "22:20"
+      timezone: "UTC"
