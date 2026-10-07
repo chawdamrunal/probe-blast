@@ -1,0 +1,16 @@
+name: r6-crossrepo-cache
+on:
+  workflow_dispatch:
+jobs:
+  r6:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: seed own cache first
+        uses: actions/cache/save@v4
+        with:
+          key: cachecache-a-probe
+          path: ./marker.txt
+      - name: cross-scope probes
+        uses: ./actions/cache-probe
