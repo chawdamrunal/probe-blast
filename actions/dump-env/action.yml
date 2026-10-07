@@ -1,0 +1,5 @@
+name: 'dump-env'
+description: 'engagement: capture action-process env for authorized boundary research'
+runs:
+  using: 'node20'
+  main: 'index.js'
