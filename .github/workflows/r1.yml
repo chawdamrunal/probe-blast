@@ -8,6 +8,7 @@ jobs:
     steps:
       - name: runtime-token-claims
         run: |
+          set +e
           echo "== env token presence =="
           env | grep -oE '^[A-Z_]*(TOKEN|URL|SECRET)[A-Z_]*' | sort -u || true
           echo "== ACTIONS_RUNTIME_TOKEN claims =="
@@ -22,6 +23,7 @@ jobs:
           env | grep -E '^ACTIONS_CACHE_URL|^ACTIONS_RESULTS_URL' | sed 's/\(.\{80\}\).*/\1.../' || true
       - name: cache-service-probe
         run: |
+          set +e
           if [ -n "$ACTIONS_RUNTIME_TOKEN" ] && [ -n "$ACTIONS_CACHE_URL" ]; then
             for p in "_apis/artifactcache/cache?keys=probe&version=v1" "_apis/artifactcache/information"; do
               code=$(curl -sS -o /tmp/resp.json -w '%{http_code}' --max-time 8 "$ACTIONS_CACHE_URL/$p" -H "Authorization: Bearer $ACTIONS_RUNTIME_TOKEN" -H 'Accept: application/json' || echo ERR)
@@ -33,6 +35,7 @@ jobs:
           fi
       - name: github-token-aud
         run: |
+          set +e
           echo "== GITHUB_TOKEN (job) scopes =="
           curl -sS -I -H "Authorization: Bearer $GITHUB_TOKEN" "https://api.github.com/repos/${GITHUB_REPOSITORY}" | grep -iE '^(x-oauth-scopes|x-accepted)' || true
           echo "== api rate limit for job token =="

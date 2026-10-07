@@ -8,6 +8,7 @@ jobs:
     steps:
       - name: identity-kernel
         run: |
+          set +e
           echo "== uname =="; uname -a
           echo "== /proc/version =="; cat /proc/version
           echo "== cmdline =="; cat /proc/cmdline
@@ -19,6 +20,7 @@ jobs:
           echo "== image-generation =="; ls /image-generation 2>/dev/null && head -50 /image-generation/*.md 2>/dev/null
       - name: dev-blocks
         run: |
+          set +e
           echo "== /dev =="; ls -la /dev
           echo "== lsblk =="; lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT,MODEL 2>/dev/null
           echo "== /sys/block =="; for b in /sys/block/*/; do echo "-- $b"; cat $b/device/model 2>/dev/null; cat $b/size 2>/dev/null; done
@@ -27,6 +29,7 @@ jobs:
           echo "== pci =="; ls /sys/bus/pci/devices 2>/dev/null || echo no-pci
       - name: mounts-ns
         run: |
+          set +e
           echo "== /proc/mounts =="; cat /proc/mounts
           echo "== filesystems =="; cat /proc/filesystems
           echo "== findmnt =="; findmnt 2>/dev/null | head -40
@@ -35,6 +38,7 @@ jobs:
           echo "== nsenter pid1 =="; sudo nsenter -t 1 -m -p -- echo NS1-OK 2>&1
       - name: net-imds
         run: |
+          set +e
           echo "== ip addr =="; ip -br addr; echo "== ip route =="; ip route
           echo "== listeners =="; ss -tulpn 2>/dev/null | head -30
           echo "== resolv =="; cat /etc/resolv.conf
@@ -44,6 +48,7 @@ jobs:
           echo "== internal dns =="; getent hosts pipelines.actions.githubusercontent.com results-receiver.actions.githubusercontent.com artifactcache.actions.githubusercontent.com 2>&1
       - name: runner-internals
         run: |
+          set +e
           echo "== home/runner =="; ls -la /home/runner/ 2>/dev/null
           echo "== runners dir =="; ls -la /home/runner/runners/ 2>/dev/null
           echo "== runner config files =="; sudo ls -la /home/runner/*/.runner /home/runner/*/.credentials /home/runner/*/.credentials_rsaparams 2>/dev/null
@@ -55,6 +60,7 @@ jobs:
           echo "== hostedtoolcache =="; ls /opt/hostedtoolcache 2>/dev/null
       - name: kernel-surface
         run: |
+          set +e
           echo "== sysctls =="; sysctl kernel.unprivileged_bpf_disabled kernel.unprivileged_userns_clone 2>/dev/null; cat /proc/sys/kernel/unprivileged_bpf_disabled 2>/dev/null
           echo "== io_uring test =="; python3 -c "import os;fd=os.syscall(425,0,0);print('IOURING fd',fd)" 2>&1
           echo "== bpf test =="; python3 -c "import os;fd=os.syscall(321,0,0,0,8,0);print('BPF fd',fd)" 2>&1
