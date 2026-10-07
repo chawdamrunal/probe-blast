@@ -1,0 +1,19 @@
+name: r8-locate-planted-entry
+on:
+  workflow_dispatch:
+jobs:
+  r8:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: restore planted key in OWN scope
+        uses: actions/cache/restore@v4
+        with:
+          key: cacheb-marker-poison-from-a
+          path: ./restored-check/
+      - name: report
+        run: |
+          set +e
+          ls -la ./restored-check/ 2>&1 | head -4
+          if [ -f ./restored-check/marker.txt ]; then echo "FOUND-IN-A-SCOPE: $(cat ./restored-check/marker.txt)"; else echo "NOT-IN-A-SCOPE-EITHER (orphaned write)"; fi
