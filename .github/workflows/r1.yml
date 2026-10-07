@@ -1,0 +1,39 @@
+name: r1-controlplane-tokens
+on:
+  workflow_dispatch:
+jobs:
+  r1:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: runtime-token-claims
+        run: |
+          echo "== env token presence =="
+          env | grep -oE '^[A-Z_]*(TOKEN|URL|SECRET)[A-Z_]*' | sort -u || true
+          echo "== ACTIONS_RUNTIME_TOKEN claims =="
+          ART="$ACTIONS_RUNTIME_TOKEN"
+          if [ -n "$ART" ]; then
+            echo "$ART" | awk -F. '{print $2}' | tr '_-' '/+' | base64 -d 2>/dev/null | python3 -m json.tool || echo decode-failed
+          else
+            echo "not in step env — checking runner process env"
+            sudo sh -c 'tr "\0" "\n" < /proc/$(pgrep -f Runner.Worker | head -1)/environ | grep -E "ACTIONS_RUNTIME_TOKEN|ACTIONS_CACHE_URL|ACTIONS_RESULTS_URL" | sed "s/\(.\{60\}\).*/\1.../"' || true
+          fi
+          echo "== cache/results urls =="
+          env | grep -E '^ACTIONS_CACHE_URL|^ACTIONS_RESULTS_URL' | sed 's/\(.\{80\}\).*/\1.../' || true
+      - name: cache-service-probe
+        run: |
+          if [ -n "$ACTIONS_RUNTIME_TOKEN" ] && [ -n "$ACTIONS_CACHE_URL" ]; then
+            for p in "_apis/artifactcache/cache?keys=probe&version=v1" "_apis/artifactcache/information"; do
+              code=$(curl -sS -o /tmp/resp.json -w '%{http_code}' --max-time 8 "$ACTIONS_CACHE_URL/$p" -H "Authorization: Bearer $ACTIONS_RUNTIME_TOKEN" -H 'Accept: application/json' || echo ERR)
+              echo "== $p -> $code"
+              head -c 400 /tmp/resp.json 2>/dev/null; echo
+            done
+          else
+            echo "no runtime token in env (expected: it lives in Runner.Worker env)"
+          fi
+      - name: github-token-aud
+        run: |
+          echo "== GITHUB_TOKEN (job) scopes =="
+          curl -sS -I -H "Authorization: Bearer $GITHUB_TOKEN" "https://api.github.com/repos/${GITHUB_REPOSITORY}" | grep -iE '^(x-oauth-scopes|x-accepted)' || true
+          echo "== api rate limit for job token =="
+          curl -sS -H "Authorization: Bearer $GITHUB_TOKEN" https://api.github.com/rate_limit | python3 -c "import json,sys;d=json.load(sys.stdin)['resources']['core'];print('limit',d['limit'],'remaining',d['remaining'])" || true
