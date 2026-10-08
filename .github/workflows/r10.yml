@@ -31,11 +31,11 @@ jobs:
           MARK: ${{ inputs.marker }}
         run: |
           echo "hunting marker: $MARK"
-          echo "== filesystem =="
+          echo "== filesystem (name-based, bounded) =="
           for D in / /mnt /var/tmp /tmp; do
-            if [ -n "$MARK" ]; then sudo find "$D" -maxdepth 1 -name 'R9-RECYCLE-*' 2>/dev/null; fi
+            sudo timeout 20 find "$D" -maxdepth 2 -name 'R9-RECYCLE-*' 2>/dev/null | head -5
           done
-          [ -n "$MARK" ] && sudo grep -R -l "$MARK" / /mnt /var/tmp 2>/dev/null | grep -v '^/proc\|^/sys' | sed -n '1,10p'
+          [ -n "$MARK" ] && sudo timeout 30 grep -l "$MARK" /R9-RECYCLE-* /mnt/R9-RECYCLE-* /var/tmp/R9-RECYCLE-* 2>/dev/null | head -5 || true
           echo "== swap raw read =="
           SW=$(awk '$2=="partition"{print $1; exit}' /proc/swaps)
           if [ -n "$SW" ] && [ -b "$SW" ]; then
