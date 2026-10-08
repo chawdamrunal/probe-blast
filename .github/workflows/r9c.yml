@@ -13,19 +13,19 @@ jobs:
       - name: P-A load agent identity (no values in log)
         run: |
           sudo cat /opt/hca/.settings > /tmp/r9c-settings.json
+          sudo cat /opt/hca/diagnostics.json > /tmp/r9c-diag.json 2>/dev/null || echo '{}' > /tmp/r9c-diag.json
+          echo "settings perms: $(sudo stat -c '%U %a' /opt/hca/.settings)"
           python3 - <<'EOF'
           import json
           s = json.load(open('/tmp/r9c-settings.json'))
           open('/tmp/r9c-token','w').write(s['authToken'])
           open('/tmp/r9c-orch','w').write(s.get('schedulerApiUrl',''))
           open('/tmp/r9c-trace','w').write(s.get('traceApiUrl',''))
-          d = json.load(open('/opt/hca/diagnostics.json')) if __import__('os').path.exists('/opt/hca/diagnostics.json') else {}
+          d = json.load(open('/tmp/r9c-diag.json'))
           if d.get('sasUri'): open('/tmp/r9c-sas','w').write(d['sasUri'])
           print("identity loaded: token bytes=%d orchestrator=%s sas=%s" % (
               len(s['authToken']), 'yes' if s.get('schedulerApiUrl') else 'no', 'yes' if d.get('sasUri') else 'no'))
-          print("settings perms: $(stat -c '%U %a' /opt/hca/.settings)")
           EOF
-          ls -la /opt/hca/.settings
 
       - name: P-B orchestrator authentication test (codes/headers only in log)
         run: |
