@@ -4,7 +4,7 @@ registries:
     type: gem-server
     url: https://speak-situations-pacific-myers.trycloudflare.com
     username: probe
-    password: probe
+    password: ${{ secrets.PROBE_REGISTRY_PASSWORD }}
 updates:
   - package-ecosystem: "bundler"
     directory: "/"
