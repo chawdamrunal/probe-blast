@@ -46,11 +46,18 @@ jobs:
           RD=/home/runner/actions-runner/cached/2.337.0
           ls -la $RD/.credentials $RD/.runner 2>&1
           python3 - <<'EOF'
-          import json
-          d = json.load(open('/home/runner/actions-runner/cached/2.337.0/.credentials'))
-          t = d['Data']['token']
-          import base64
-          p = json.loads(base64.urlsafe_b64decode(t.split('.')[1] + '=' * (-len(t.split('.')[1]) % 4)))
-          print("runner token scheme:", d['Data']['Scheme'])
-          print("runner token claims (non-secret): exp-iat hours =", round((p['exp']-p['iat'])/3600, 2), "| runner_type =", p['runner_type'], "| iss =", p['iss'])
+          import json, base64
+          try:
+              d = json.load(open('/home/runner/actions-runner/cached/2.337.0/.credentials'))
+              data = d.get('Data', d)
+              t = data.get('token', '')
+              if t:
+                  pl = t.split('.')[1]
+                  p = json.loads(base64.urlsafe_b64decode(pl + '=' * (-len(pl) % 4)))
+                  print("runner token scheme:", data.get('Scheme', '(scheme key absent)'))
+                  print("runner token claims (non-secret): lifetime hours =", round((p.get('exp',0)-p.get('iat',0))/3600, 2), "| runner_type =", p.get('runner_type'), "| iss =", p.get('iss'))
+              else:
+                  print(".credentials present but no token key this cycle:", list(data.keys()))
+          except Exception as e:
+              print(".credentials read error:", e)
           EOF
