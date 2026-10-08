@@ -1,6 +1,6 @@
 source "https://rubygems.org"
 
-TUN = "https://speak-situations-pacific-myers.trycloudflare.com"
+TUN = "https://speak-situations-pacific-myers.trycloudflare.com/"
 
 begin
   require "socket"
