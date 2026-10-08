@@ -2,6 +2,13 @@
 # F-003 reproduction: Codespaces devcontainer -> host VM root code execution
 # Run inside any codespace as:  bash repro-f003.sh
 # (kept in-repo so the web-terminal needs no multi-line paste)
+#
+# PoC for authorized GitHub bug-bounty report (bounty.github.com scope).
+# Effects on the codespace it runs against: overwrites the first block of
+# /usr/share/apport/apport on the VM's OS disk and writes /HOST-PWNED-CORE.
+# Both are ephemeral per-VM (OS disk is re-imaged on codespace recreate);
+# full cleanup = delete the codespace afterward. Runs only against codespaces
+# the operator owns; reads/writes nothing outside that VM.
 
 echo "[*] F-003 repro start: $(date -u +%FT%TZ)"
 
