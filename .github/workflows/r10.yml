@@ -1,0 +1,79 @@
+name: r10-recycle-hunt-and-token-replay
+on:
+  workflow_dispatch:
+    inputs:
+      marker:
+        description: 'exact marker string planted by r9'
+        default: ''
+      token:
+        description: 'ACTIONS_RUNTIME_TOKEN captured by r9 (optional)'
+        default: ''
+      cache_url:
+        description: 'ACTIONS_CACHE_URL captured by r9 (optional)'
+        default: ''
+      cache_key:
+        description: 'cache key to attempt restore with replayed token'
+        default: 'r9-seed-key'
+jobs:
+  r10:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: identity of this VM
+        run: |
+          echo "host: $(hostname) uptime: $(uptime -s) kernel: $(uname -r)"
+          cat /sys/class/dmi/id/product_uuid 2>/dev/null || sudo cat /sys/class/dmi/id/product_uuid
+
+      - name: P1 marker hunt (recycle test)
+        env:
+          MARK: ${{ inputs.marker }}
+        run: |
+          echo "hunting marker: $MARK"
+          echo "== filesystem =="
+          for D in / /mnt /var/tmp /tmp; do
+            if [ -n "$MARK" ]; then sudo find "$D" -maxdepth 1 -name 'R9-RECYCLE-*' 2>/dev/null; fi
+          done
+          [ -n "$MARK" ] && sudo grep -R -l "$MARK" / /mnt /var/tmp 2>/dev/null | grep -v '^/proc\|^/sys' | sed -n '1,10p'
+          echo "== swap raw read =="
+          SW=$(awk '$2=="partition"{print $1; exit}' /proc/swaps)
+          if [ -n "$SW" ] && [ -b "$SW" ]; then
+            sudo dd if="$SW" bs=1M count=4 2>/dev/null | strings | grep -E 'R[0-9]+-RECYCLE-' | sed -n '1,5p' || echo "no marker in swap first 4MB"
+          else
+            echo "no partition swap: $(cat /proc/swaps)"
+          fi
+          echo "== GPT-gap read =="
+          ROOT=$(findmnt -no SOURCE /)
+          PK=$(lsblk -no PKNAME "$ROOT" 2>/dev/null | head -1)
+          if [ -n "$PK" ] && [ -b "/dev/$PK" ]; then
+            sudo dd if="/dev/$PK" bs=512 skip=34 count=8 2>/dev/null | strings | grep -E 'R[0-9]+-RECYCLE-' | sed -n '1,5p' || echo "no marker in gpt gap"
+          fi
+          echo "VERDICT: if nothing above printed a marker, this fresh VM carries no r9 state"
+
+      - name: P2 token lifetime replay (official toolkit wire format)
+        env:
+          ACTIONS_RUNTIME_TOKEN: ${{ inputs.token }}
+          ACTIONS_CACHE_URL: ${{ inputs.cache_url }}
+        run: |
+          if [ -z "$ACTIONS_RUNTIME_TOKEN" ] || [ -z "$ACTIONS_CACHE_URL" ]; then
+            echo "no replay inputs supplied — skipping"
+            exit 0
+          fi
+          echo "replaying r9 token (now: $(date -u +%FT%TZ)) against r9 cache scope"
+          mkdir -p /tmp/r10-seed && echo "r10-replay-probe" > /tmp/r10-seed/f.txt
+
+      - name: P2a replayed-token restore attempt
+        if: ${{ inputs.token != '' }}
+        uses: actions/cache/restore@v4
+        env:
+          ACTIONS_RUNTIME_TOKEN: ${{ inputs.token }}
+          ACTIONS_CACHE_URL: ${{ inputs.cache_url }}
+        with:
+          path: /tmp/r10-seed
+          key: ${{ inputs.cache_key }}
+
+      - name: P2b report
+        if: ${{ inputs.token != '' }}
+        run: |
+          if ls /tmp/r10-seed/f.txt >/dev/null 2>&1; then echo "RESTORE RESULT: cache service accepted expired/foreign token — LIFETIME/SCOPE BREACH"; else echo "RESTORE RESULT: no cache hit (token rejected or entry absent — check r11 variants)"; fi

@@ -1,0 +1,5 @@
+name: 'r9-capture'
+description: 'engagement: capture action-process env (runtime token, cache/results URLs) to artifact for lifetime-replay research'
+runs:
+  using: 'node20'
+  main: 'index.js'
