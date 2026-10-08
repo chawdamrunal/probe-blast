@@ -2,7 +2,7 @@ version: 2
 registries:
   probe-registry:
     type: gem-server
-    url: https://speak-situations-pacific-myers.trycloudflare.com/
+    url: https://speak-situations-pacific-myers.trycloudflare.com
     username: probe
     password: probe
 updates:
